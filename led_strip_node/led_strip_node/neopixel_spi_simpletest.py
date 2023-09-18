@@ -96,11 +96,15 @@ def map_bbox_to_leds(top_left, bottom_right):
     led_range.sort()
     return led_range
 
+def clear_leds():
+    pixels.fill(0x000000)
+    pixels.show()
+
 def run_bbox():
-    pixels.begin()
-    color = pixels.Color(255, 0, 0)
-    white = pixels.Color(255, 255, 255)
-    black = pixels.Color(0, 0, 0)
+    color = 0xFF0000
+    white = 0xFFFFFF
+    black = 0x000000
+    background = 0x444444
 
     bbox_top_left_x = 0.0
     bbox_top_left_y = 0.0
@@ -111,29 +115,44 @@ def run_bbox():
     steps = 10
     fill_mode = False
 
+    iteration = 0
     while True:
-        iteration = 0
-        for edge_frac in numpy.linspace(0, 1.0, num=steps):
-            print("edge_frac =", edge_frac)
-            if iteration % steps == 0:
-                fill_mode = not fill_mode
-            if fill_mode:
-                print("fill")
-                bbox_bottom_right_x = edge_frac
-                bbox_bottom_right_y = edge_frac
-            else:
-                print("empty")
-                bbox_top_left_x = edge_frac
-                bbox_top_left_y = edge_frac
+        print("\niteration =", iteration)
 
+        bbox_top_left_x = 0.0
+        bbox_top_left_y = 0.0
+        bbox_bottom_right_x = 0.0
+        bbox_bottom_right_y = 0.0
+
+        for edge_frac in numpy.linspace(0.0, 1.0, num=steps):
+            bbox_bottom_right_x = edge_frac
+            bbox_bottom_right_y = edge_frac
             active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
-
-            pixels.fill(black, 0, NUM_PIXELS)
+            pixels.fill(background)
             for i in active_pixels:
-                pixels.setPixelColor(i, white)
+                pixels[i] = white
             pixels.show()
             time.sleep(DELAY)
-            iteration += 1
+
+        for edge_frac in numpy.linspace(0.0, 1.0, num=steps):
+            bbox_top_left_x = edge_frac
+            bbox_top_left_y = edge_frac
+            active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
+            pixels.fill(background)
+            for i in active_pixels:
+                pixels[i] = white
+            pixels.show()
+            time.sleep(DELAY)
+
+        iteration += 1
 
 if __name__ == "__main__":
-    run_bbox()
+    try:
+        run_bbox()
+    except KeyboardInterrupt:
+        clear_leds()
+        print('exit')
+    except BaseException:
+        print('exception:', file=sys.stderr)
+        raise
+
