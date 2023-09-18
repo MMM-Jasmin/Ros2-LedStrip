@@ -7,7 +7,7 @@
 
 import sys
 import os
-import numpy
+import numpy as np
 import json
 import time
 
@@ -27,22 +27,26 @@ NUM_LEDS_VERT = 12
 PIXEL_ORDER = neopixel.GRB
 COLORS = (0xFF0000, 0x00FF00, 0x0000FF)
 DELAY = 0.05
+TIMEOUT = 1 # seconds
 
 white = 0xFFFFFF
 black = 0x000000
-# background = 0x444444
 foreground = white
-background = black
+# background = 0x444444
+# background = black
+background = 0x111111
+
+last_person_timestamp = time.time()
 
 spi = board.SPI()
 pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, auto_write=False)
 
 
 def map_horiz_led(width_frac):
-    return int((NUM_LEDS_HORIZ - 1) * width_frac)
+    return int(np.round((NUM_LEDS_HORIZ - 1) * width_frac))
 
 def map_vert_led(width_frac):
-    return int((NUM_LEDS_VERT - 1) * width_frac)
+    return int(np.round((NUM_LEDS_VERT - 1) * width_frac))
 
 def map_edge_bottom_to_led(width_frac):
     return map_horiz_led(width_frac)
@@ -116,7 +120,7 @@ def run_bbox_test():
         bbox_bottom_right_x = 0.0
         bbox_bottom_right_y = 0.0
 
-        for edge_frac in numpy.linspace(0.0, 1.0, num=steps):
+        for edge_frac in np.linspace(0.0, 1.0, num=steps):
             bbox_bottom_right_x = edge_frac
             bbox_bottom_right_y = edge_frac
             active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
@@ -126,7 +130,7 @@ def run_bbox_test():
             pixels.show()
             time.sleep(DELAY)
 
-        for edge_frac in numpy.linspace(0.0, 1.0, num=steps):
+        for edge_frac in np.linspace(0.0, 1.0, num=steps):
             bbox_top_left_x = edge_frac
             bbox_top_left_y = edge_frac
             active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
@@ -136,6 +140,19 @@ def run_bbox_test():
             pixels.show()
             time.sleep(DELAY)
         iteration += 1
+
+
+def attract_mode():
+    print("Attract mode")
+    while True:
+        pixels.fill(0xFF0000)
+        time.sleep(DELAY)
+        pixels.fill(0x00FF00)
+        time.sleep(DELAY)
+        pixels.fill(0x0000FF)
+        time.sleep(DELAY)
+
+attract_process = Process(target=attract_mode)
 
 
 class LedStrip(Node):
@@ -151,12 +168,14 @@ class LedStrip(Node):
 
     def listener_callback(self, msg):
         # self.get_logger().info('I heard: "%s"' % msg.data)
+        if attract_process.is_alive():
+            attract_process.join()
+        
+        last_person_timestamp = time.time()
         det_json = json.loads(msg.data)['DETECTED_OBJECTS']
         person_dict = [x for x in det_json if x['name'] == 'person']
         center_list = [x['center'] for x in person_dict if 'center' in x.keys()]
         w_h_list = [x['w_h'] for x in person_dict if 'w_h' in x.keys()]
-        # print(center_list)
-        # print(w_h_list)
         num_persons = len(min(center_list, w_h_list))
         
         pixels.fill(background)
@@ -175,6 +194,9 @@ class LedStrip(Node):
             leds_bbox = self.update_bbox(bbox_top_left, bbox_bottom_right)
             active_pixels += leds_bbox
         for i in active_pixels:
+            if i >= NUM_PIXELS:
+                print("Warning: Index exceeds number of pixels")
+                continue
             pixels[i] = foreground
         pixels.show()
         
@@ -184,6 +206,18 @@ class LedStrip(Node):
         active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
         return active_pixels
 
+    def attract_mode():
+        while True:
+            pass
+
+def person_watchdog():
+    if time.time() - last_person_timestamp > TIMEOUT:
+        if not attract_process.is_alive():
+            attract_process.start()
+    time.sleep(TIMEOUT)
+
+watchdog_process = Process(target=person_watchdog)
+
 def main(args=None):
     rclpy.init(args=args)
 
@@ -192,9 +226,11 @@ def main(args=None):
 
     try:
         # p.start()
+        watchdog_process.start()
         rclpy.spin(led_strip)
     except KeyboardInterrupt:
         # p.join()
+        watchdog_process.join()
         clear_leds()
         print('exit')
     except BaseException:
