@@ -14,11 +14,11 @@ import time
 import board
 import neopixel_spi as neopixel
 
-from multiprocessing import Process
+from threading import Thread, Event
+from queue import Queue
 
 import rclpy
 from rclpy.node import Node
-
 from std_msgs.msg import String
 
 NUM_PIXELS = 38
@@ -27,7 +27,6 @@ NUM_LEDS_VERT = 12
 PIXEL_ORDER = neopixel.GRB
 #PIXEL_ORDER = neopixel.GRBW
 DELAY = 0.05
-TIMEOUT = 1 # seconds
 
 white = 0xFFFFFF
 black = 0x000000
@@ -47,6 +46,8 @@ foreground = blue
 #background = black
 #background = 0x111111
 background = white
+
+attract_mode = False
 
 last_person_timestamp = time.time()
 
@@ -181,19 +182,7 @@ def run_bbox_test():
             time.sleep(DELAY)
         iteration += 1
 
-
-def attract_mode():
-    print("Attract mode")
-    while True:
-        pixels.fill(red)
-        time.sleep(DELAY)
-        pixels.fill(green)
-        time.sleep(DELAY)
-        pixels.fill(blue)
-        time.sleep(DELAY)
-
-attract_process = Process(target=attract_mode)
-
+leds = []
 
 class LedStrip(Node):
 
@@ -208,17 +197,20 @@ class LedStrip(Node):
 
     def listener_callback(self, msg):
         # self.get_logger().info('I heard: "%s"' % msg.data)
-        if attract_process.is_alive():
-            attract_process.join()
         
-        last_person_timestamp = time.time()
         det_json = json.loads(msg.data)['DETECTED_OBJECTS']
         person_dict = [x for x in det_json if x['name'] == 'person']
         center_list = [x['center'] for x in person_dict if 'center' in x.keys()]
         w_h_list = [x['w_h'] for x in person_dict if 'w_h' in x.keys()]
-        num_persons = len(min(center_list, w_h_list))
-        
-        pixels.fill(background)
+        num_persons = min(len(center_list), len(w_h_list))
+        #print("num_persons", num_persons)
+
+        global last_person_timestamp
+        if num_persons > 0:
+            last_person_timestamp = time.time()
+        else:
+            return
+
         active_pixels = []
         for i in range(num_persons):
             (cx, cy) = center_list[i]
@@ -234,13 +226,9 @@ class LedStrip(Node):
             # leds_bbox = self.bbox_to_all_sides(bbox_top_left, bbox_bottom_right)
             leds_bbox = self.bbox_to_two_sides(bbox_top_left, bbox_bottom_right)
             active_pixels += leds_bbox
-        for i in active_pixels:
-            if i >= NUM_PIXELS:
-                print("Warning: Index exceeds number of pixels")
-                continue
-            pixels[i] = foreground
-        pixels.show()
-        
+        global leds
+        leds = active_pixels
+
     def bbox_to_all_sides(self, bbox_top_left, bbox_bottom_right):
         (bbox_top_left_x, bbox_top_left_y) = bbox_top_left
         (bbox_bottom_right_x, bbox_bottom_right_y) = bbox_bottom_right
@@ -254,19 +242,6 @@ class LedStrip(Node):
         center_y = (bbox_bottom_right_y + bbox_top_left_y) / 2.0
         active_pixels = []
 
-        # active_pixels += map_edge_right_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
-        # active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
-        # active_pixels += map_edge_top_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
-        # active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
-        # print(active_pixels)
-        # return active_pixels
-        
-        # print("bbox_top_left_x:", bbox_top_left_x)
-        # print("bbox_top_left_y:", bbox_top_left_y)
-        # print("bbox_bottom_right_x:", bbox_bottom_right_x)
-        # print("bbox_bottom_right_y:", bbox_bottom_right_y)
-        # print("center:", center_x, center_y)
-
         if center_x < 0.5:
             active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
         else:
@@ -278,41 +253,113 @@ class LedStrip(Node):
             active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
         return active_pixels
 
-    def attract_mode():
-        while True:
-            pass
 
-def person_watchdog():
-    if time.time() - last_person_timestamp > TIMEOUT:
-        if not attract_process.is_alive():
-            attract_process.start()
-    time.sleep(TIMEOUT)
+def attract_sequence_1(exit_event: Event):
+    ANIMATION_DELAY = 0.5
+    global attract_mode
+    pixels.fill(red)
+    pixels.show()
+    time.sleep(ANIMATION_DELAY)
+    #if not attract_mode or exit_event:
+    #    return
+    pixels.fill(green)
+    pixels.show()
+    time.sleep(ANIMATION_DELAY)
+    #if not attract_mode or exit_event:
+    #    return
+    pixels.fill(blue)
+    pixels.show()
+    time.sleep(ANIMATION_DELAY)
 
-watchdog_process = Process(target=person_watchdog)
+def attract_sequence_2(exit_event: Event):
+    ANIMATION_DELAY = 0.02
+    ANIMATION_BACKGROUND = 0x111111
+    global attract_mode
+    #while attract_mode and not exit_event.is_set():
+    pixels.fill(ANIMATION_BACKGROUND)
+    for i in range(NUM_PIXELS):
+        pixels[i] = red
+        pixels.show()
+        time.sleep(ANIMATION_DELAY)
+        pixels[i] = ANIMATION_BACKGROUND
+    #if not attract_mode or exit_event:
+    #    return
+    for i in range(NUM_PIXELS):
+        pixels[i] = green
+        pixels.show()
+        time.sleep(ANIMATION_DELAY)
+        pixels[i] = ANIMATION_BACKGROUND
+    #if not attract_mode or exit_event:
+    #    return
+    for i in range(NUM_PIXELS):
+        pixels[i] = blue
+        pixels.show()
+        time.sleep(ANIMATION_DELAY)
+        pixels[i] = ANIMATION_BACKGROUND
+
+def led_loop(exit_event: Event):
+    global attract_mode
+    global leds
+    while not exit_event.is_set():
+        while not attract_mode and not exit_event.is_set():
+            #print("ATTRACT WAITING")
+            #time.sleep(1)
+            active_pixels = leds
+            pixels.fill(background)
+            for i in active_pixels:
+                if i >= NUM_PIXELS:
+                    print("Warning: Index exceeds number of pixels")
+                    continue
+                pixels[i] = foreground
+            pixels.show()
+            time.sleep(0.2)
+        while attract_mode and not exit_event.is_set():
+            attract_sequence_1(exit_event)
+            attract_sequence_2(exit_event)
+
+def person_watchdog(exit_event: Event):
+    global last_person_timestamp
+    global attract_mode
+    while not exit_event.is_set():
+        time_diff = time.time() - last_person_timestamp
+        #print("last_person_timestamp:", last_person_timestamp)
+        #print("time_diff:", time_diff)
+        if time_diff > 1.0:
+            if not attract_mode:
+                print("Attract mode ON")
+            attract_mode = True
+        else:
+            if attract_mode:
+                print("Attract mode OFF")
+            attract_mode = False
+        time.sleep(0.5)
 
 def main(args=None):
     rclpy.init(args=args)
 
     led_strip = LedStrip()
-    # p = Process(target=run_bbox_test)
+    exit_event = Event()
+    led_loop_thread = Thread(target=led_loop, args=(exit_event,))
+    person_watchdog_thread = Thread(target=person_watchdog, args=(exit_event,))
 
     try:
-        # p.start()
-        watchdog_process.start()
+        person_watchdog_thread.start()
+        led_loop_thread.start()
         rclpy.spin(led_strip)
     except KeyboardInterrupt:
-        # p.join()
-        watchdog_process.join()
+        exit_event.set()
+        led_loop_thread.join()
+        person_watchdog_thread.join()
         clear_leds()
         print('exit')
     except BaseException:
         print('exception:', file=sys.stderr)
         raise
-    # finally:
-    #     Destroy the node explicitly
-    #     (optional - Done automatically when node is garbage collected)
-    #     led_strip.destroy_node()
-    #     rclpy.shutdown()
+    finally:
+        # Destroy the node explicitly
+        # (optional - Done automatically when node is garbage collected)
+        led_strip.destroy_node()
+        # rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
