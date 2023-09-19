@@ -25,21 +25,33 @@ NUM_PIXELS = 38
 NUM_LEDS_HORIZ = 7
 NUM_LEDS_VERT = 12
 PIXEL_ORDER = neopixel.GRB
-COLORS = (0xFF0000, 0x00FF00, 0x0000FF)
+#PIXEL_ORDER = neopixel.GRBW
 DELAY = 0.05
 TIMEOUT = 1 # seconds
 
 white = 0xFFFFFF
 black = 0x000000
-foreground = white
-# background = 0x444444
-# background = black
-background = 0x111111
+red = 0xFF0000
+green = 0x0000FF
+blue = 0x00FF00
+
+#white = 0xFFFFFF00
+#black = 0x00000000
+#red = 0xFF000000
+#green = 0x0000FF00
+#blue = 0x00FF0000
+
+#foreground = white
+foreground = blue
+#background = 0x444444
+#background = black
+#background = 0x111111
+background = white
 
 last_person_timestamp = time.time()
 
 spi = board.SPI()
-pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, auto_write=False)
+pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, pixel_order=PIXEL_ORDER, auto_write=False)
 
 
 def map_horiz_led(width_frac):
@@ -60,6 +72,34 @@ def map_edge_top_to_led(width_frac):
 def map_edge_left_to_led(width_frac):
     return NUM_LEDS_HORIZ + NUM_LEDS_VERT + NUM_LEDS_HORIZ + map_vert_led(width_frac)
 
+def map_edge_bottom_range_to_led(width_frac_start, width_frac_end):
+    led_bottom_idx_start = map_edge_bottom_to_led(width_frac_start)
+    led_bottom_idx_end = map_edge_bottom_to_led(width_frac_end)
+    led_bottom_idx_min = min(led_bottom_idx_start, led_bottom_idx_end)
+    led_bottom_idx_max = max(led_bottom_idx_start, led_bottom_idx_end)
+    return [*range(led_bottom_idx_min, led_bottom_idx_max + 1)]
+    
+def map_edge_right_range_to_led(width_frac_start, width_frac_end):
+    led_right_idx_start = map_edge_right_to_led(width_frac_start)
+    led_right_idx_end = map_edge_right_to_led(width_frac_end)
+    led_right_idx_min = min(led_right_idx_start, led_right_idx_end)
+    led_right_idx_max = max(led_right_idx_start, led_right_idx_end)
+    return [*range(led_right_idx_min, led_right_idx_max + 1)]
+    
+def map_edge_left_range_to_led(width_frac_start, width_frac_end):
+    led_left_idx_start = map_edge_left_to_led(width_frac_start)
+    led_left_idx_end = map_edge_left_to_led(width_frac_end)
+    led_left_idx_min = min(led_left_idx_start, led_left_idx_end)
+    led_left_idx_max = max(led_left_idx_start, led_left_idx_end)
+    return [*range(led_left_idx_min, led_left_idx_max + 1)]
+    
+def map_edge_top_range_to_led(width_frac_start, width_frac_end):
+    led_top_idx_start = map_edge_top_to_led(width_frac_start)
+    led_top_idx_end = map_edge_top_to_led(width_frac_end)
+    led_top_idx_min = min(led_top_idx_start, led_top_idx_end)
+    led_top_idx_max = max(led_top_idx_start, led_top_idx_end)
+    return [*range(led_top_idx_min, led_top_idx_max + 1)]
+    
 def map_width_to_leds(width_frac):
     led_top_idx = map_edge_top_to_led(width_frac)
     led_bottom_idx = map_edge_bottom_to_led(width_frac)
@@ -98,7 +138,7 @@ def map_bbox_to_leds(top_left, bottom_right):
     return led_range
 
 def clear_leds():
-    pixels.fill(0x000000)
+    pixels.fill(black)
     pixels.show()
 
 def run_bbox_test():
@@ -145,11 +185,11 @@ def run_bbox_test():
 def attract_mode():
     print("Attract mode")
     while True:
-        pixels.fill(0xFF0000)
+        pixels.fill(red)
         time.sleep(DELAY)
-        pixels.fill(0x00FF00)
+        pixels.fill(green)
         time.sleep(DELAY)
-        pixels.fill(0x0000FF)
+        pixels.fill(blue)
         time.sleep(DELAY)
 
 attract_process = Process(target=attract_mode)
@@ -191,7 +231,8 @@ class LedStrip(Node):
             bbox_bottom_right_y = cy + h2
             bbox_top_left = (bbox_top_left_x, bbox_top_left_y)
             bbox_bottom_right = (bbox_bottom_right_x, bbox_bottom_right_y)
-            leds_bbox = self.update_bbox(bbox_top_left, bbox_bottom_right)
+            # leds_bbox = self.bbox_to_all_sides(bbox_top_left, bbox_bottom_right)
+            leds_bbox = self.bbox_to_two_sides(bbox_top_left, bbox_bottom_right)
             active_pixels += leds_bbox
         for i in active_pixels:
             if i >= NUM_PIXELS:
@@ -200,10 +241,41 @@ class LedStrip(Node):
             pixels[i] = foreground
         pixels.show()
         
-    def update_bbox(self, bbox_top_left, bbox_bottom_right):
+    def bbox_to_all_sides(self, bbox_top_left, bbox_bottom_right):
         (bbox_top_left_x, bbox_top_left_y) = bbox_top_left
         (bbox_bottom_right_x, bbox_bottom_right_y) = bbox_bottom_right
         active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
+        return active_pixels
+
+    def bbox_to_two_sides(self, bbox_top_left, bbox_bottom_right):
+        (bbox_top_left_x, bbox_top_left_y) = bbox_top_left
+        (bbox_bottom_right_x, bbox_bottom_right_y) = bbox_bottom_right
+        center_x = (bbox_bottom_right_x + bbox_top_left_x) / 2.0
+        center_y = (bbox_bottom_right_y + bbox_top_left_y) / 2.0
+        active_pixels = []
+
+        # active_pixels += map_edge_right_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
+        # active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
+        # active_pixels += map_edge_top_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
+        # active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
+        # print(active_pixels)
+        # return active_pixels
+        
+        # print("bbox_top_left_x:", bbox_top_left_x)
+        # print("bbox_top_left_y:", bbox_top_left_y)
+        # print("bbox_bottom_right_x:", bbox_bottom_right_x)
+        # print("bbox_bottom_right_y:", bbox_bottom_right_y)
+        # print("center:", center_x, center_y)
+
+        if center_x < 0.5:
+            active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
+        else:
+            active_pixels += map_edge_right_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
+        
+        if center_y < 0.5:
+            active_pixels += map_edge_top_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
+        else:
+            active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
         return active_pixels
 
     def attract_mode():
