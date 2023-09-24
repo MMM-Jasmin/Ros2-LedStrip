@@ -28,6 +28,10 @@ PIXEL_ORDER = neopixel.GRB
 #PIXEL_ORDER = neopixel.GRBW
 DELAY = 0.05
 
+ATTRACT_MODE_DELAY = 1.0
+BBOX_ZONE_X = 0.33
+BBOX_ZONE_Y = 0.33
+
 white = 0xFFFFFF
 black = 0x000000
 red = 0xFF0000
@@ -214,6 +218,17 @@ class LedStrip(Node):
         active_pixels = []
         for i in range(num_persons):
             (cx, cy) = center_list[i]
+            #min_cx = BBOX_ZONE_X
+            #max_cx = 1 - BBOX_ZONE_X
+            #min_cy = BBOX_ZONE_Y
+            #max_cy = 1 - BBOX_ZONE_Y
+            #deadzone_x = (cx > min_cx) and (cx < max_cx)
+            #deadzone_y = (cy > min_cy) and (cy < max_cy)
+            #print("cx:", cx)
+            #print("min_cx:", min_cx)
+            #print("max_cx:", max_cx)
+            #if deadzone_x or deadzone_y:
+            #    continue
             (w, h) = w_h_list[i]
             w2 = w / 2.0
             h2 = h / 2.0
@@ -242,14 +257,19 @@ class LedStrip(Node):
         center_y = (bbox_bottom_right_y + bbox_top_left_y) / 2.0
         active_pixels = []
 
-        if center_x < 0.5:
+        min_cx = BBOX_ZONE_X
+        max_cx = 1 - BBOX_ZONE_X
+        min_cy = BBOX_ZONE_Y
+        max_cy = 1 - BBOX_ZONE_Y
+
+        if center_x < min_cx:
             active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
-        else:
+        if center_x > max_cx:
             active_pixels += map_edge_right_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
         
-        if center_y < 0.5:
+        if center_y < min_cy:
             active_pixels += map_edge_top_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
-        else:
+        if center_y > max_cy:
             active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
         return active_pixels
 
@@ -324,7 +344,7 @@ def person_watchdog(exit_event: Event):
         time_diff = time.time() - last_person_timestamp
         #print("last_person_timestamp:", last_person_timestamp)
         #print("time_diff:", time_diff)
-        if time_diff > 1.0:
+        if time_diff > ATTRACT_MODE_DELAY:
             if not attract_mode:
                 print("Attract mode ON")
             attract_mode = True
