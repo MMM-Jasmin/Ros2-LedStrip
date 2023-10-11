@@ -5,11 +5,11 @@
 
 # ros2 topic pub --once /object_det/objects std_msgs/String "data: {\"name\": \"person\"}"
 
-import sys
-import os
+import sys, os, time, json
 import numpy as np
-import json
-import time
+np.set_printoptions(threshold=sys.maxsize)
+
+import math, colorsys, cv2
 
 import board
 import neopixel_spi as neopixel
@@ -21,183 +21,57 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-NUM_PIXELS = 38
+def getHexCodeFromRGB( red, green, blue):
+    return (int(red) << 16 | int(blue) << 8 | int(green))
+
+def getHexCodeFromHSV( hue, saturation, value):
+    (h, s, v) = (hue / 360, saturation / 255, value / 255)
+    (r, g, b) = colorsys.hsv_to_rgb(h, s, v)
+    (r, g, b) = (int(r * 255), int(g * 255), int(b * 255))
+
+    return getHexCodeFromRGB(r, g, b)
+
 NUM_LEDS_HORIZ = 7
 NUM_LEDS_VERT = 12
+
+NUM_PIXELS = 2 * NUM_LEDS_HORIZ + 2 * NUM_LEDS_VERT
+
+raster_size = 20
+raster_margin = 15
+
+raster_width = NUM_LEDS_HORIZ * raster_size 
+raster_height = NUM_LEDS_VERT * raster_size
+
 PIXEL_ORDER = neopixel.GRB
 #PIXEL_ORDER = neopixel.GRBW
 DELAY = 0.05
 
-ATTRACT_MODE_DELAY = 1.0
-BBOX_ZONE_X = 0.33
-BBOX_ZONE_Y = 0.33
-
-white = 0xFFFFFF
-black = 0x000000
-red = 0xFF0000
-green = 0x0000FF
-blue = 0x00FF00
-
-#white = 0xFFFFFF00
-#black = 0x00000000
-#red = 0xFF000000
-#green = 0x0000FF00
-#blue = 0x00FF0000
-
-#foreground = white
-foreground = blue
-#background = 0x444444
-#background = black
-#background = 0x111111
-background = white
-
 attract_mode = False
 
-last_person_timestamp = time.time()
+hue_dist= 360 / NUM_PIXELS
+rainbow_hue= np.linspace(0, 360, num=NUM_PIXELS)
 
 spi = board.SPI()
 pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, pixel_order=PIXEL_ORDER, auto_write=False)
 
+idle_color = [240, 0, 64]
 
-def map_horiz_led(width_frac):
-    return int(np.round((NUM_LEDS_HORIZ - 1) * width_frac))
+led_hsv = np.array([idle_color]*NUM_PIXELS)
+sat_image = np.zeros((raster_height + raster_margin * 2, raster_width + raster_margin * 2), dtype=np.uint8)
+#print(led_hsv)
 
-def map_vert_led(width_frac):
-    return int(np.round((NUM_LEDS_VERT - 1) * width_frac))
-
-def map_edge_bottom_to_led(width_frac):
-    return map_horiz_led(width_frac)
-
-def map_edge_right_to_led(width_frac):
-    return NUM_LEDS_HORIZ + map_vert_led(1 - width_frac)
-
-def map_edge_top_to_led(width_frac):
-    return NUM_LEDS_HORIZ + NUM_LEDS_VERT + map_horiz_led(1 - width_frac)
-
-def map_edge_left_to_led(width_frac):
-    return NUM_LEDS_HORIZ + NUM_LEDS_VERT + NUM_LEDS_HORIZ + map_vert_led(width_frac)
-
-def map_edge_bottom_range_to_led(width_frac_start, width_frac_end):
-    led_bottom_idx_start = map_edge_bottom_to_led(width_frac_start)
-    led_bottom_idx_end = map_edge_bottom_to_led(width_frac_end)
-    led_bottom_idx_min = min(led_bottom_idx_start, led_bottom_idx_end)
-    led_bottom_idx_max = max(led_bottom_idx_start, led_bottom_idx_end)
-    return [*range(led_bottom_idx_min, led_bottom_idx_max + 1)]
-    
-def map_edge_right_range_to_led(width_frac_start, width_frac_end):
-    led_right_idx_start = map_edge_right_to_led(width_frac_start)
-    led_right_idx_end = map_edge_right_to_led(width_frac_end)
-    led_right_idx_min = min(led_right_idx_start, led_right_idx_end)
-    led_right_idx_max = max(led_right_idx_start, led_right_idx_end)
-    return [*range(led_right_idx_min, led_right_idx_max + 1)]
-    
-def map_edge_left_range_to_led(width_frac_start, width_frac_end):
-    led_left_idx_start = map_edge_left_to_led(width_frac_start)
-    led_left_idx_end = map_edge_left_to_led(width_frac_end)
-    led_left_idx_min = min(led_left_idx_start, led_left_idx_end)
-    led_left_idx_max = max(led_left_idx_start, led_left_idx_end)
-    return [*range(led_left_idx_min, led_left_idx_max + 1)]
-    
-def map_edge_top_range_to_led(width_frac_start, width_frac_end):
-    led_top_idx_start = map_edge_top_to_led(width_frac_start)
-    led_top_idx_end = map_edge_top_to_led(width_frac_end)
-    led_top_idx_min = min(led_top_idx_start, led_top_idx_end)
-    led_top_idx_max = max(led_top_idx_start, led_top_idx_end)
-    return [*range(led_top_idx_min, led_top_idx_max + 1)]
-    
-def map_width_to_leds(width_frac):
-    led_top_idx = map_edge_top_to_led(width_frac)
-    led_bottom_idx = map_edge_bottom_to_led(width_frac)
-    return (led_bottom_idx, led_top_idx)
-
-def map_height_to_leds(width_frac):
-    led_right_idx = map_edge_right_to_led(width_frac)
-    led_left_idx = map_edge_left_to_led(width_frac)
-    return (led_right_idx, led_left_idx)
-
-def map_width_range_to_leds(width_frac_start, width_frac_end):
-    (led_bottom_idx_start, led_top_idx_start) = map_width_to_leds(width_frac_start)
-    (led_bottom_idx_end, led_top_idx_end) = map_width_to_leds(width_frac_end)
-    led_bottom_idx_min = min(led_bottom_idx_start, led_bottom_idx_end)
-    led_bottom_idx_max = max(led_bottom_idx_start, led_bottom_idx_end)
-    led_top_idx_min = min(led_top_idx_start, led_top_idx_end)
-    led_top_idx_max = max(led_top_idx_start, led_top_idx_end)
-    return [*range(led_bottom_idx_min, led_bottom_idx_max + 1)] + [*range(led_top_idx_min, led_top_idx_max + 1)]
-
-def map_height_range_to_leds(height_frac_start, height_frac_end):
-    (led_right_idx_start, led_left_idx_start) = map_height_to_leds(height_frac_start)
-    (led_right_idx_end, led_left_idx_end) = map_height_to_leds(height_frac_end)
-    led_right_idx_min = min(led_right_idx_start, led_right_idx_end)
-    led_right_idx_max = max(led_right_idx_start, led_right_idx_end)
-    led_left_idx_min = min(led_left_idx_start, led_left_idx_end)
-    led_left_idx_max = max(led_left_idx_start, led_left_idx_end)
-    return [*range(led_right_idx_min, led_right_idx_max + 1)] + [*range(led_left_idx_min, led_left_idx_max + 1)]
-
-def map_bbox_to_leds(top_left, bottom_right):
-    (top_left_x, top_left_y) = top_left
-    (bottom_right_x, bottom_right_y) = bottom_right
-    led_width_range = map_width_range_to_leds(top_left_x, bottom_right_x)
-    led_height_range = map_height_range_to_leds(top_left_y, bottom_right_y)
-    led_range = led_width_range + led_height_range
-    led_range.sort()
-    return led_range
-
-def clear_leds():
-    pixels.fill(black)
-    pixels.show()
-
-def run_bbox_test():
-    color = 0xFF0000
-    white = 0xFFFFFF
-    black = 0x000000
-    # background = 0x444444
-    foreground = white
-    background = black
-
-    bbox_incr = 0.1
-    steps = 10
-    fill_mode = False
-
-    iteration = 0
-    while True:
-        bbox_top_left_x = 0.0
-        bbox_top_left_y = 0.0
-        bbox_bottom_right_x = 0.0
-        bbox_bottom_right_y = 0.0
-
-        for edge_frac in np.linspace(0.0, 1.0, num=steps):
-            bbox_bottom_right_x = edge_frac
-            bbox_bottom_right_y = edge_frac
-            active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
-            pixels.fill(background)
-            for i in active_pixels:
-                pixels[i] = white
-            pixels.show()
-            time.sleep(DELAY)
-
-        for edge_frac in np.linspace(0.0, 1.0, num=steps):
-            bbox_top_left_x = edge_frac
-            bbox_top_left_y = edge_frac
-            active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
-            pixels.fill(background)
-            for i in active_pixels:
-                pixels[i] = white
-            pixels.show()
-            time.sleep(DELAY)
-        iteration += 1
-
-leds = []
+person_det_counter = 0
 
 class LedStrip(Node):
 
     def __init__(self):
         super().__init__('led_strip')
-        self.subscription = self.create_subscription(
-            String,
-            '/object_det/objects',
-            self.listener_callback,
-            10)
+        self.subscription = self.create_subscription( String, '/object_det/objects', self.listener_callback, 10)
         self.subscription  # prevent unused variable warning
+
+    def clear_leds(self):
+        pixels.fill(getHexCodeFromRGB(0,0,0))
+        pixels.show()
 
     def listener_callback(self, msg):
         # self.get_logger().info('I heard: "%s"' % msg.data)
@@ -207,152 +81,89 @@ class LedStrip(Node):
         center_list = [x['center'] for x in person_dict if 'center' in x.keys()]
         w_h_list = [x['w_h'] for x in person_dict if 'w_h' in x.keys()]
         num_persons = min(len(center_list), len(w_h_list))
-        #print("num_persons", num_persons)
 
-        global last_person_timestamp
+        global person_det_counter
+        global attract_mode
         if num_persons > 0:
-            last_person_timestamp = time.time()
+            if person_det_counter > 10: 
+                if attract_mode:
+                    print("attract_mode false")
+                    attract_mode = False
+            else:
+                person_det_counter += 1 
         else:
+            if person_det_counter < 1:
+                if not attract_mode:
+                    print("attract_mode true")
+                    attract_mode = True
+            else:
+                person_det_counter -= 2
             return
 
-        active_pixels = []
+        global sat_image
+        box_image = np.copy(sat_image)
+
+        threshhold = 5
+        box_image = np.where(box_image < threshhold, 0, box_image - threshhold)
+              
         for i in range(num_persons):
             (cx, cy) = center_list[i]
-            #min_cx = BBOX_ZONE_X
-            #max_cx = 1 - BBOX_ZONE_X
-            #min_cy = BBOX_ZONE_Y
-            #max_cy = 1 - BBOX_ZONE_Y
-            #deadzone_x = (cx > min_cx) and (cx < max_cx)
-            #deadzone_y = (cy > min_cy) and (cy < max_cy)
-            #print("cx:", cx)
-            #print("min_cx:", min_cx)
-            #print("max_cx:", max_cx)
-            #if deadzone_x or deadzone_y:
-            #    continue
+            (cx, cy) = (int(cx * raster_width), int(cy * raster_height))
             (w, h) = w_h_list[i]
-            w2 = w / 2.0
-            h2 = h / 2.0
-            bbox_top_left_x = cx - w2
-            bbox_top_left_y = cy - h2
-            bbox_bottom_right_x = cx + w2
-            bbox_bottom_right_y = cy + h2
-            bbox_top_left = (bbox_top_left_x, bbox_top_left_y)
-            bbox_bottom_right = (bbox_bottom_right_x, bbox_bottom_right_y)
-            # leds_bbox = self.bbox_to_all_sides(bbox_top_left, bbox_bottom_right)
-            leds_bbox = self.bbox_to_two_sides(bbox_top_left, bbox_bottom_right)
-            active_pixels += leds_bbox
-        global leds
-        leds = active_pixels
+            (w, h) = (int(w * raster_width + 20), int(h * raster_height + 20))
 
-    def bbox_to_all_sides(self, bbox_top_left, bbox_bottom_right):
-        (bbox_top_left_x, bbox_top_left_y) = bbox_top_left
-        (bbox_bottom_right_x, bbox_bottom_right_y) = bbox_bottom_right
-        active_pixels = map_bbox_to_leds((bbox_top_left_x, bbox_top_left_y), (bbox_bottom_right_x, bbox_bottom_right_y))
-        return active_pixels
+            #print (cx, cy, w, h)
 
-    def bbox_to_two_sides(self, bbox_top_left, bbox_bottom_right):
-        (bbox_top_left_x, bbox_top_left_y) = bbox_top_left
-        (bbox_bottom_right_x, bbox_bottom_right_y) = bbox_bottom_right
-        center_x = (bbox_bottom_right_x + bbox_top_left_x) / 2.0
-        center_y = (bbox_bottom_right_y + bbox_top_left_y) / 2.0
-        active_pixels = []
+            top     = int(math.floor(cy - h/2))
+            bottom  = int(math.ceil(cy + h/2))
+            left    = int(math.floor(cx - w/2))
+            right   = int(math.ceil(cx + w/2))
 
-        min_cx = BBOX_ZONE_X
-        max_cx = 1 - BBOX_ZONE_X
-        min_cy = BBOX_ZONE_Y
-        max_cy = 1 - BBOX_ZONE_Y
+            for y in range(top, bottom):
+                if (y + raster_margin) < 0 or y + raster_margin > (raster_height + raster_margin * 2 -1):
+                    continue
+                for x in range(left, right):
+                    if (x + raster_margin) < 0 or (x + raster_margin) > (raster_width + raster_margin * 2 - 1):
+                        continue
+                    box_image[y + raster_margin][x + raster_margin] = 255
 
-        if center_x < min_cx:
-            active_pixels += map_edge_left_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
-        if center_x > max_cx:
-            active_pixels += map_edge_right_range_to_led(bbox_top_left_y, bbox_bottom_right_y)
-        
-        if center_y < min_cy:
-            active_pixels += map_edge_top_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
-        if center_y > max_cy:
-            active_pixels += map_edge_bottom_range_to_led(bbox_top_left_x, bbox_bottom_right_x)
-        return active_pixels
+        box_image = cv2.blur(box_image,(15,15),cv2.BORDER_REFLECT)
 
+        np.copyto(sat_image, box_image)
 
-def attract_sequence_1(exit_event: Event):
-    ANIMATION_DELAY = 0.5
-    global attract_mode
-    pixels.fill(red)
-    pixels.show()
-    time.sleep(ANIMATION_DELAY)
-    #if not attract_mode or exit_event:
-    #    return
-    pixels.fill(green)
-    pixels.show()
-    time.sleep(ANIMATION_DELAY)
-    #if not attract_mode or exit_event:
-    #    return
-    pixels.fill(blue)
-    pixels.show()
-    time.sleep(ANIMATION_DELAY)
-
-def attract_sequence_2(exit_event: Event):
-    ANIMATION_DELAY = 0.02
-    ANIMATION_BACKGROUND = 0x111111
-    global attract_mode
-    #while attract_mode and not exit_event.is_set():
-    pixels.fill(ANIMATION_BACKGROUND)
-    for i in range(NUM_PIXELS):
-        pixels[i] = red
-        pixels.show()
-        time.sleep(ANIMATION_DELAY)
-        pixels[i] = ANIMATION_BACKGROUND
-    #if not attract_mode or exit_event:
-    #    return
-    for i in range(NUM_PIXELS):
-        pixels[i] = green
-        pixels.show()
-        time.sleep(ANIMATION_DELAY)
-        pixels[i] = ANIMATION_BACKGROUND
-    #if not attract_mode or exit_event:
-    #    return
-    for i in range(NUM_PIXELS):
-        pixels[i] = blue
-        pixels.show()
-        time.sleep(ANIMATION_DELAY)
-        pixels[i] = ANIMATION_BACKGROUND
 
 def led_loop(exit_event: Event):
+    global led_hsv
     global attract_mode
-    global leds
     while not exit_event.is_set():
-        while not attract_mode and not exit_event.is_set():
-            #print("ATTRACT WAITING")
-            #time.sleep(1)
-            active_pixels = leds
-            pixels.fill(background)
-            for i in active_pixels:
-                if i >= NUM_PIXELS:
-                    print("Warning: Index exceeds number of pixels")
-                    continue
-                pixels[i] = foreground
-            pixels.show()
-            time.sleep(0.2)
-        while attract_mode and not exit_event.is_set():
-            attract_sequence_1(exit_event)
-            attract_sequence_2(exit_event)
+        if attract_mode:
+            # taste the rainbow!
+            for i in range(NUM_PIXELS):
+                color = getHexCodeFromHSV(rainbow_hue[i],255,255)
+                pixels[i] = color
 
-def person_watchdog(exit_event: Event):
-    global last_person_timestamp
-    global attract_mode
-    while not exit_event.is_set():
-        time_diff = time.time() - last_person_timestamp
-        #print("last_person_timestamp:", last_person_timestamp)
-        #print("time_diff:", time_diff)
-        if time_diff > ATTRACT_MODE_DELAY:
-            if not attract_mode:
-                print("Attract mode ON")
-            attract_mode = True
+                rainbow_hue[i] += 0.5
+                rainbow_hue[i] = rainbow_hue[i] % 360
+
         else:
-            if attract_mode:
-                print("Attract mode OFF")
-            attract_mode = False
-        time.sleep(0.5)
+            # create satturation array to turn the color blue depending on the person bbox
+            box_sat = []
+            for i in range(NUM_LEDS_HORIZ): # get all the bottom pixel
+                box_sat.append(sat_image[raster_height + raster_margin][raster_margin + i * raster_size])
+            for i in range(NUM_LEDS_VERT): # get all the right pixel
+                box_sat.append(sat_image[raster_height + raster_margin - i * raster_size][raster_margin + raster_width])
+            for i in range(NUM_LEDS_HORIZ): # get all the top pixel
+                box_sat.append(sat_image[raster_margin][raster_margin + raster_width - i * raster_size])
+            for i in range(NUM_LEDS_VERT): # get all the left pixel
+                box_sat.append(sat_image[raster_margin + i * raster_size ][raster_margin])
+
+            # use default hue and value, change only the saturation
+            for index, hsv in enumerate(led_hsv):
+                color = getHexCodeFromHSV(hsv[0],box_sat[index],hsv[2])
+                pixels[index] = color
+
+        pixels.show()
+    time.sleep(0.03)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -360,17 +171,14 @@ def main(args=None):
     led_strip = LedStrip()
     exit_event = Event()
     led_loop_thread = Thread(target=led_loop, args=(exit_event,))
-    person_watchdog_thread = Thread(target=person_watchdog, args=(exit_event,))
 
     try:
-        person_watchdog_thread.start()
         led_loop_thread.start()
         rclpy.spin(led_strip)
     except KeyboardInterrupt:
         exit_event.set()
         led_loop_thread.join()
-        person_watchdog_thread.join()
-        clear_leds()
+        led_strip.clear_leds()
         print('exit')
     except BaseException:
         print('exception:', file=sys.stderr)
