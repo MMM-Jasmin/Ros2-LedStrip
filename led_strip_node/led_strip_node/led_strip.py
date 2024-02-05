@@ -19,7 +19,7 @@ from queue import Queue
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, ColorRGBA
 
 def getHexCodeFromRGB( red, green, blue):
     return (int(red) << 16 | int(blue) << 8 | int(green))
@@ -31,10 +31,27 @@ def getHexCodeFromHSV( hue, saturation, value):
 
     return getHexCodeFromRGB(r, g, b)
 
+def getRGBFromHSV( hue, saturation, value):
+    (h, s, v) = (hue / 360, saturation / 255, value / 255)
+    (r, g, b) = colorsys.hsv_to_rgb(h, s, v)
+    (r, g, b) = (int(r * 255), int(g * 255), int(b * 255))
+
+    return [r, g, b]
+
+def lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolate on the scale given by a to b, using t as the point on that scale.
+    Examples
+    --------
+        50 == lerp(0, 100, 0.5)
+        4.2 == lerp(1, 5, 0.8)
+    """
+    return (1 - t) * a + t * b
+
 NUM_LEDS_HORIZ = 7
 NUM_LEDS_VERT = 12
 
 NUM_PIXELS = 2 * NUM_LEDS_HORIZ + 2 * NUM_LEDS_VERT
+print("--initializing for " + str(NUM_PIXELS) + " leds--")
 
 raster_size = 20
 raster_margin = 15
@@ -44,21 +61,22 @@ raster_height = NUM_LEDS_VERT * raster_size
 
 PIXEL_ORDER = neopixel.GRB
 #PIXEL_ORDER = neopixel.GRBW
-DELAY = 0.05
 
 attract_mode = False
-
-hue_dist= 360 / NUM_PIXELS
-rainbow_hue= np.linspace(0, 360, num=NUM_PIXELS)
+hue_dist = 360 / NUM_PIXELS
+rainbow_hue = np.linspace(0, 360, num=NUM_PIXELS)
 
 spi = board.SPI()
 pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, pixel_order=PIXEL_ORDER, auto_write=False)
 
-idle_color = [240, 0, 64]
+idle_color = [240., 0., 64.]
 
-led_hsv = np.array([idle_color]*NUM_PIXELS)
+lerp_rgb = np.array([idle_color]*NUM_PIXELS)
+flash_color = [0.0, 0.0, 0.0]
+
+flash_waiting_timer = 0
+
 sat_image = np.zeros((raster_height + raster_margin * 2, raster_width + raster_margin * 2), dtype=np.uint8)
-#print(led_hsv)
 
 person_det_counter = 0
 
@@ -67,11 +85,30 @@ class LedStrip(Node):
     def __init__(self):
         super().__init__('led_strip')
         self.subscription = self.create_subscription( String, '/object_det/objects', self.listener_callback, 10)
+        self.subscription_action = self.create_subscription( ColorRGBA, '/led/action/flash', self.action_callback, 10)
         self.subscription  # prevent unused variable warning
+
+        #pub = self.create_publisher(ColorRGBA, '/led/action/flash', 10)
+        #msg = ColorRGBA()
+        #msg.r = 255.0
+        #msg.g = 0.0
+        #msg.b = 0.0
+        #pub.publish(msg)
 
     def clear_leds(self):
         pixels.fill(getHexCodeFromRGB(0,0,0))
         pixels.show()
+
+    def action_callback(self, msg):
+        global flash_waiting_timer
+        global flash_color
+        
+        print("flashing in the following color")
+        print(msg)
+
+        flash_color = [int(msg.r), int(msg.g), int(msg.b)]
+        flash_waiting_timer = 0.5
+
 
     def listener_callback(self, msg):
         # self.get_logger().info('I heard: "%s"' % msg.data)
@@ -112,8 +149,6 @@ class LedStrip(Node):
             (w, h) = w_h_list[i]
             (w, h) = (int(w * raster_width + 20), int(h * raster_height + 20))
 
-            #print (cx, cy, w, h)
-
             top     = int(math.floor(cy - h/2))
             bottom  = int(math.ceil(cy + h/2))
             left    = int(math.floor(cx - w/2))
@@ -133,8 +168,13 @@ class LedStrip(Node):
 
 
 def led_loop(exit_event: Event):
-    global led_hsv
     global attract_mode
+    global flash_color
+    global lerp_rgb
+    global flash_waiting_timer
+
+    flashing_ongoing = False
+
     while not exit_event.is_set():
         if attract_mode:
             # taste the rainbow!
@@ -142,7 +182,7 @@ def led_loop(exit_event: Event):
                 color = getHexCodeFromHSV(rainbow_hue[i],255,255)
                 pixels[i] = color
 
-                rainbow_hue[i] += 0.5
+                rainbow_hue[i] += 1.0
                 rainbow_hue[i] = rainbow_hue[i] % 360
 
         else:
@@ -158,12 +198,30 @@ def led_loop(exit_event: Event):
                 box_sat.append(sat_image[raster_margin + i * raster_size ][raster_margin])
 
             # use default hue and value, change only the saturation
-            for index, hsv in enumerate(led_hsv):
-                color = getHexCodeFromHSV(hsv[0],box_sat[index],hsv[2])
+            for index in range(len(lerp_rgb)):
+                if flash_waiting_timer > 0.0:
+                    lerp_rgb[index] = flash_color
+                    flashing_ongoing = True
+                else:
+                    colorToBe = getRGBFromHSV(idle_color[0],box_sat[index],idle_color[2])
+                    lerp_rgb[index][0] = lerp(lerp_rgb[index][0], colorToBe[0], 0.5)
+                    lerp_rgb[index][1] = lerp(lerp_rgb[index][1], colorToBe[1], 0.5)
+                    lerp_rgb[index][2] = lerp(lerp_rgb[index][2], colorToBe[2], 0.5)
+                
+                color = getHexCodeFromRGB(lerp_rgb[index][0], lerp_rgb[index][1], lerp_rgb[index][2])
                 pixels[index] = color
 
         pixels.show()
-    time.sleep(0.03)
+        
+        if flashing_ongoing:
+            print("sleeping for " + str(flash_waiting_timer) + " seconds")
+            time.sleep(flash_waiting_timer)
+            flash_waiting_timer = 0.0
+            flashing_ongoing = False
+        else:
+            time.sleep(1./60.)
+
+        
 
 def main(args=None):
     rclpy.init(args=args)
